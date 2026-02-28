@@ -7,6 +7,8 @@ ssh_pwauth: true
 users:
   - name: root
     lock_passwd: false
+packages:
+  - curl
 chpasswd:
   expire: false
   # <= cloud-init 22.2.x 需要

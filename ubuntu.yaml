@@ -96,6 +96,7 @@ autoinstall:
           >/target/etc/profile.d/fastfetch.sh
       chmod 0644 /target/etc/profile.d/fastfetch.sh
       curtin in-target --target=/target -- apt-get update || true
+      curtin in-target --target=/target -- apt-get install -y curl || true
       curtin in-target --target=/target -- apt-get install -y fastfetch || true
 
       if [ "$enable_bbr" = 1 ]; then

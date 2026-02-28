@@ -905,6 +905,28 @@ install_fastfetch_if_possible() {
     fi
 }
 
+install_curl_if_possible() {
+    local os_dir=$1
+
+    if is_have_cmd_on_disk "$os_dir" curl; then
+        return
+    fi
+
+    if is_have_cmd_on_disk "$os_dir" apt-get; then
+        chroot_apt_install "$os_dir" curl || true
+    elif is_have_cmd_on_disk "$os_dir" dnf || is_have_cmd_on_disk "$os_dir" yum; then
+        chroot_dnf install curl || true
+    elif is_have_cmd_on_disk "$os_dir" zypper; then
+        chroot "$os_dir" zypper install -y curl || true
+    elif is_have_cmd_on_disk "$os_dir" pacman; then
+        chroot "$os_dir" pacman -Syu --noconfirm curl || true
+    elif is_have_cmd_on_disk "$os_dir" apk; then
+        chroot "$os_dir" apk add curl || true
+    elif is_have_cmd_on_disk "$os_dir" emerge; then
+        chroot "$os_dir" emerge net-misc/curl || true
+    fi
+}
+
 append_cloud_init_bbr_runcmd() {
     local ci_file=$1
 
@@ -1604,6 +1626,7 @@ install_alpine() {
     if is_enable_bbr; then
         write_bbr_sysctl_file /os
     fi
+    install_curl_if_possible /os
     install_fastfetch_if_possible /os
 
     # 设置公钥
@@ -2055,6 +2078,7 @@ basic_init() {
         fi
     fi
 
+    install_curl_if_possible "$os_dir"
     install_fastfetch_if_possible "$os_dir"
 
     # sshd
