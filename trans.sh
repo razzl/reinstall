@@ -4001,10 +4001,23 @@ modify_os_on_disk() {
 
     update_part
 
-    # dd linux 的时候不用修改硬盘内容（nocloud 模式除外）
-    if [ "$distro" = "dd" ] && [ "$only_process" != "nocloud" ] && ! lsblk -f /dev/$xda | grep ntfs; then
-        return
-    fi
+    customize_dd_linux_image() {
+        os_dir=$1
+
+        info "Customize DD Linux"
+
+        mount_pseudo_fs "$os_dir"
+        cp_resolv_conf "$os_dir"
+
+        if is_have_cmd_on_disk "$os_dir" cloud-init; then
+            mkdir -p "$os_dir/etc/cloud"
+            touch "$os_dir/etc/cloud/cloud-init.disabled"
+            rm -rf "$os_dir/var/lib/cloud/instance" "$os_dir/var/lib/cloud/instances"
+        fi
+
+        basic_init "$os_dir"
+        restore_resolv_conf "$os_dir"
+    }
 
     mkdir -p /os
     # 按分区容量大到小，依次寻找系统分区
@@ -4019,6 +4032,8 @@ modify_os_on_disk() {
                     mount -o remount,rw /os
                     if [ "$only_process" = nocloud ]; then
                         setup_nocloud $os_dir
+                    elif [ "$distro" = "dd" ]; then
+                        customize_dd_linux_image "$os_dir"
                     else
                         modify_linux $os_dir
                     fi
@@ -4062,6 +4077,20 @@ modify_os_on_disk() {
         fi
     done
     error_and_exit "Can't find os partition."
+}
+
+is_linux_image_on_disk() {
+    mkdir -p /os
+    for part in $(lsblk /dev/$xda*[0-9] --sort SIZE -no NAME | tac); do
+        if mount -o ro /dev/$part /os 2>/dev/null; then
+            if { ls -d /os/etc/ || ls -d /os/*/etc/; } >/dev/null 2>&1; then
+                umount /os
+                return 0
+            fi
+            umount /os
+        fi
+    done
+    return 1
 }
 
 get_need_swap_size() {
@@ -7437,6 +7466,8 @@ trans() {
             fi
             if [ -d /configs/cloud-data ]; then
                 modify_os_on_disk nocloud
+            elif is_linux_image_on_disk; then
+                modify_os_on_disk linux
             else
                 modify_os_on_disk windows
             fi
