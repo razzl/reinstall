@@ -15,6 +15,7 @@ SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
 TRUE=0
 FALSE=1
 EFI_UUID=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+DEFAULT_TARGET_TIMEZONE=Asia/Shanghai
 
 error() {
     color='\e[31m'
@@ -803,6 +804,79 @@ is_need_change_ssh_port() {
     [ -n "$ssh_port" ] && ! [ "$ssh_port" = 22 ]
 }
 
+is_valid_target_hostname() {
+    local len
+    len=${#1}
+
+    [ "$len" -ge 1 ] && [ "$len" -le 63 ] &&
+        echo "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+}
+
+get_target_timezone() {
+    if [ -n "$target_timezone" ]; then
+        echo "$target_timezone"
+    else
+        echo "$DEFAULT_TARGET_TIMEZONE"
+    fi
+}
+
+get_target_hostname() {
+    local hostname_value
+
+    hostname_value=$target_hostname
+    if [ -z "$hostname_value" ]; then
+        hostname_value=$(hostname 2>/dev/null || true)
+    fi
+
+    case "$hostname_value" in
+    "" | localhost | localhost.localdomain)
+        hostname_value="instance-$(date +%Y%m%d)-$(date +%H%M)"
+        ;;
+    esac
+
+    if ! is_valid_target_hostname "$hostname_value"; then
+        error_and_exit "Invalid target hostname: $hostname_value"
+    fi
+
+    echo "$hostname_value"
+}
+
+is_enable_bbr() {
+    [ "$enable_bbr" = 1 ] || [ "$enable_bbr" = true ]
+}
+
+write_bbr_sysctl_file() {
+    local os_dir=$1
+    local sysctl_file=$os_dir/etc/sysctl.d/90-reinstall-bbr.conf
+
+    mkdir -p "$os_dir/etc/sysctl.d"
+    cat >"$sysctl_file" <<'EOF'
+# reinstall: enable BBR
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+EOF
+}
+
+append_cloud_init_bbr_runcmd() {
+    local ci_file=$1
+
+    cat <<'EOF' >>$ci_file
+write_files:
+  - path: /etc/sysctl.d/90-reinstall-bbr.conf
+    permissions: '0644'
+    content: |
+      # reinstall: enable BBR
+      net.core.default_qdisc = fq
+      net.ipv4.tcp_congestion_control = bbr
+      net.ipv4.tcp_mtu_probing = 1
+      net.ipv4.tcp_slow_start_after_idle = 0
+bootcmd:
+  - sysctl --system || true
+EOF
+}
+
 is_need_change_rdp_port() {
     [ -n "$rdp_port" ] && ! [ "$rdp_port" = 3389 ]
 }
@@ -1476,10 +1550,14 @@ install_alpine() {
 
     # 安装其他部件
     chroot /os setup-keymap us us
-    chroot /os setup-timezone -i Asia/Shanghai
+    chroot /os setup-timezone -i "$(get_target_timezone)"
     # 3.21 默认是 chrony
     # 3.22 默认是 busybox ntp
     printf '\n' | chroot /os setup-ntp || true
+    echo "$(get_target_hostname)" >/os/etc/hostname
+    if is_enable_bbr; then
+        write_bbr_sysctl_file /os
+    fi
 
     # 设置公钥
     if is_need_set_ssh_keys; then
@@ -1894,6 +1972,8 @@ add_frpc_systemd_service_if_need() {
 
 basic_init() {
     os_dir=$1
+    timezone_value=$(get_target_timezone)
+    hostname_value=$(get_target_hostname)
 
     # 此时不能用
     # chroot $os_dir timedatectl set-timezone Asia/Shanghai
@@ -1901,15 +1981,32 @@ basic_init() {
 
     # debian 11 没有 systemd-firstboot
     if is_have_cmd_on_disk $os_dir systemd-firstboot; then
-        if chroot $os_dir systemd-firstboot --help | grep -wq '\--force'; then
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai --force
-        else
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai
+        firstboot_args="--timezone=$timezone_value"
+        if chroot $os_dir systemd-firstboot --help | grep -wq '\--hostname'; then
+            firstboot_args="$firstboot_args --hostname=$hostname_value"
         fi
+        if chroot $os_dir systemd-firstboot --help | grep -wq '\--force'; then
+            chroot $os_dir systemd-firstboot $firstboot_args --force
+        else
+            chroot $os_dir systemd-firstboot $firstboot_args
+        fi
+    else
+        if [ -e "$os_dir/usr/share/zoneinfo/$timezone_value" ]; then
+            ln -snf "/usr/share/zoneinfo/$timezone_value" "$os_dir/etc/localtime"
+        fi
+        echo "$timezone_value" >"$os_dir/etc/timezone" 2>/dev/null || true
+        echo "$hostname_value" >"$os_dir/etc/hostname"
     fi
 
     # gentoo 不会自动创建 machine-id
     clear_machine_id $os_dir
+
+    if is_enable_bbr; then
+        write_bbr_sysctl_file "$os_dir"
+        if is_have_cmd_on_disk $os_dir sysctl; then
+            chroot $os_dir sysctl --system || true
+        fi
+    fi
 
     # sshd
     chroot $os_dir ssh-keygen -A
@@ -2938,7 +3035,9 @@ download_cloud_init_config() {
     # 修改密码
     # 不能用 sed 替换，因为含有特殊字符
     content=$(cat $ci_file)
-    echo "${content//@PASSWORD@/$(get_password_linux_sha512)}" >$ci_file
+    content=${content//@PASSWORD@/$(get_password_linux_sha512)}
+    content=${content//@HOSTNAME@/$(get_target_hostname)}
+    echo "${content//@TIMEZONE@/$(get_target_timezone)}" >$ci_file
 
     # 修改 ssh 端口
     if is_need_change_ssh_port; then
@@ -2955,6 +3054,10 @@ swap:
   filename: /swapfile
   size: auto
 EOF
+    fi
+
+    if is_enable_bbr; then
+        append_cloud_init_bbr_runcmd "$ci_file"
     fi
 
     create_cloud_init_network_config "$ci_file" "$recognize_static6" "$recognize_ipv6_types"

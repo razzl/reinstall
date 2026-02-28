@@ -39,6 +39,10 @@ autoinstall:
           sed -i "/@SOURCE_ID@/d" /autoinstall.yaml
       fi
 
+      if [ -n "$target_timezone" ]; then
+          sed -i "s#^[[:space:]]*timezone: .*#  timezone: $target_timezone#" /autoinstall.yaml
+      fi
+
       # 内核风味
       # https://bugs.launchpad.net/subiquity/+bug/1989353
       sed -i "s/generic/$kernel/" /run/kernel-meta-package
@@ -74,6 +78,21 @@ autoinstall:
       cd /target
       curl -LO $confhome/resize.sh
 
+      if [ -n "$target_hostname" ]; then
+          printf '%s\n' "$target_hostname" >/target/etc/hostname
+      fi
+
+      if [ "$enable_bbr" = 1 ]; then
+          mkdir -p /target/etc/sysctl.d
+          printf '%s\n' \
+              '# reinstall: enable BBR' \
+              'net.core.default_qdisc = fq' \
+              'net.ipv4.tcp_congestion_control = bbr' \
+              'net.ipv4.tcp_mtu_probing = 1' \
+              'net.ipv4.tcp_slow_start_after_idle = 0' \
+              >/target/etc/sysctl.d/90-reinstall-bbr.conf
+      fi
+
       # 升级 cloud-init
       # curtin in-target --target=/target -- apt update
       # curtin in-target --target=/target -- apt install --only-upgrade cloud-init
@@ -83,6 +102,7 @@ autoinstall:
         # 合并分区
         bash /resize.sh
     disable_root: false
+    hostname: localhost
     users:
       - name: root
         lock_passwd: false

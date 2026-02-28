@@ -9,6 +9,7 @@ confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
+DEFAULT_TARGET_TIMEZONE=Asia/Shanghai
 
 # 记录要用到的 windows 程序，运行时输出删除 \r
 WINDOWS_EXES='cmd powershell wmic reg diskpart netsh bcdedit mountvol'
@@ -87,6 +88,9 @@ Usage: $reinstall_____ anolis      7|8|23
                        [--ssh-key   KEY]
                        [--ssh-port  PORT]
                        [--web-port  PORT]
+                       [--hostname  HOSTNAME]
+                       [--timezone  TIMEZONE]
+                       [--bbr]
                        [--frpc-toml PATH]
 
                        For Windows Only:
@@ -695,6 +699,49 @@ is_absolute_path() {
     # 检查路径是否以/开头
     # 注意语法和 ash 不同
     [[ "$1" = /* ]]
+}
+
+is_valid_target_hostname() {
+    local len
+    len=${#1}
+
+    [ "$len" -ge 1 ] && [ "$len" -le 63 ] &&
+        grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$' <<<"$1"
+}
+
+normalize_target_hostname() {
+    if [ -z "$target_hostname" ]; then
+        if is_in_windows; then
+            target_hostname=localhost
+        else
+            target_hostname=$(hostname 2>/dev/null || true)
+        fi
+    fi
+
+    case "$target_hostname" in
+    "" | localhost | localhost.localdomain)
+        target_hostname="instance-$(date +%Y%m%d)-$(date +%H%M)"
+        ;;
+    esac
+
+    if ! is_valid_target_hostname "$target_hostname"; then
+        error_and_exit "Invalid --hostname value: $target_hostname"
+    fi
+}
+
+normalize_target_timezone() {
+    [ -n "$target_timezone" ] || target_timezone=$DEFAULT_TARGET_TIMEZONE
+
+    if ! is_in_windows &&
+        [ -d /usr/share/zoneinfo ] &&
+        ! [ -e "/usr/share/zoneinfo/$target_timezone" ]; then
+        error_and_exit "Invalid --timezone value: $target_timezone"
+    fi
+}
+
+normalize_linux_customizations() {
+    normalize_target_hostname
+    normalize_target_timezone
 }
 
 is_cpu_supports_x86_64_v3() {
@@ -3069,7 +3116,7 @@ build_extra_cmdline() {
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
     for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image main_disk \
         elts deb_mirror \
-        ssh_port rdp_port web_port allow_ping; do
+        ssh_port rdp_port web_port allow_ping target_hostname target_timezone enable_bbr; do
         value=${!key}
         if [ -n "$value" ]; then
             is_need_quote "$value" &&
@@ -3938,7 +3985,7 @@ else
 fi
 
 long_opts=
-for o in ci installer debug minimal allow-ping force-cn help \
+for o in ci installer debug minimal allow-ping force-cn help bbr \
     add-driver: \
     hold: sleep: \
     iso: \
@@ -3947,9 +3994,11 @@ for o in ci installer debug minimal allow-ping force-cn help \
     img: \
     cloud-data: \
     lang: \
+    hostname: \
     passwd: password: \
     ssh-port: \
     ssh-key: public-key: \
+    timezone: \
     rdp-port: \
     web-port: http-port: \
     allow-ping: \
@@ -3998,6 +4047,10 @@ while true; do
         ;;
     --minimal)
         minimal=1
+        shift
+        ;;
+    --bbr)
+        enable_bbr=1
         shift
         ;;
     --allow-ping)
@@ -4050,6 +4103,11 @@ while true; do
     --passwd | --password)
         [ -n "$2" ] || error_and_exit "Need value for $1"
         password=$2
+        shift 2
+        ;;
+    --hostname)
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+        target_hostname=$2
         shift 2
         ;;
     --ssh-key | --public-key)
@@ -4123,6 +4181,11 @@ EOF
     --ssh-port)
         is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
         ssh_port=$2
+        shift 2
+        ;;
+    --timezone)
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+        target_timezone=$2
         shift 2
         ;;
     --rdp-port)
@@ -4236,6 +4299,12 @@ fi
 
 # 必备组件
 install_pkg curl grep
+
+# 统一 Linux 目标系统初始化配置
+case "$distro" in
+windows | netboot.xyz) ;;
+*) normalize_linux_customizations ;;
+esac
 
 # 强制忽略/强制添加 --ci 参数
 # debian 不强制忽略 ci 留作测试
