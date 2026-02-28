@@ -859,6 +859,52 @@ net.ipv4.tcp_slow_start_after_idle = 0
 EOF
 }
 
+write_fastfetch_profile() {
+    local os_dir=$1
+    local profile_dir=$os_dir/etc/profile.d
+    local profile_file=$profile_dir/fastfetch.sh
+
+    mkdir -p "$profile_dir"
+    cat >"$profile_file" <<'EOF'
+# Show fastfetch once per interactive login shell.
+case $- in
+*i*) ;;
+*) return 0 2>/dev/null || exit 0 ;;
+esac
+
+[ -t 1 ] || return 0 2>/dev/null || exit 0
+[ -n "$FASTFETCH_SHOWN" ] && return 0 2>/dev/null || exit 0
+
+export FASTFETCH_SHOWN=1
+command -v fastfetch >/dev/null 2>&1 && fastfetch
+EOF
+    chmod 0644 "$profile_file"
+}
+
+install_fastfetch_if_possible() {
+    local os_dir=$1
+
+    write_fastfetch_profile "$os_dir"
+
+    if is_have_cmd_on_disk "$os_dir" fastfetch; then
+        return
+    fi
+
+    if is_have_cmd_on_disk "$os_dir" apt-get; then
+        chroot_apt_install "$os_dir" fastfetch || true
+    elif is_have_cmd_on_disk "$os_dir" dnf || is_have_cmd_on_disk "$os_dir" yum; then
+        chroot_dnf install fastfetch || true
+    elif is_have_cmd_on_disk "$os_dir" zypper; then
+        chroot "$os_dir" zypper install -y fastfetch || true
+    elif is_have_cmd_on_disk "$os_dir" pacman; then
+        chroot "$os_dir" pacman -Syu --noconfirm fastfetch || true
+    elif is_have_cmd_on_disk "$os_dir" apk; then
+        chroot "$os_dir" apk add fastfetch || true
+    elif is_have_cmd_on_disk "$os_dir" emerge; then
+        chroot "$os_dir" emerge app-misc/fastfetch || true
+    fi
+}
+
 append_cloud_init_bbr_runcmd() {
     local ci_file=$1
 
@@ -1558,6 +1604,7 @@ install_alpine() {
     if is_enable_bbr; then
         write_bbr_sysctl_file /os
     fi
+    install_fastfetch_if_possible /os
 
     # 设置公钥
     if is_need_set_ssh_keys; then
@@ -2007,6 +2054,8 @@ basic_init() {
             chroot $os_dir sysctl --system || true
         fi
     fi
+
+    install_fastfetch_if_possible "$os_dir"
 
     # sshd
     chroot $os_dir ssh-keygen -A

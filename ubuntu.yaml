@@ -82,6 +82,22 @@ autoinstall:
           printf '%s\n' "$target_hostname" >/target/etc/hostname
       fi
 
+      mkdir -p /target/etc/profile.d
+      printf '%s\n' \
+          '# Show fastfetch once per interactive login shell.' \
+          'case $- in' \
+          '*i*) ;;' \
+          '*) return 0 2>/dev/null || exit 0 ;;' \
+          'esac' \
+          '[ -t 1 ] || return 0 2>/dev/null || exit 0' \
+          '[ -n "$FASTFETCH_SHOWN" ] && return 0 2>/dev/null || exit 0' \
+          'export FASTFETCH_SHOWN=1' \
+          'command -v fastfetch >/dev/null 2>&1 && fastfetch' \
+          >/target/etc/profile.d/fastfetch.sh
+      chmod 0644 /target/etc/profile.d/fastfetch.sh
+      curtin in-target --target=/target -- apt-get update || true
+      curtin in-target --target=/target -- apt-get install -y fastfetch || true
+
       if [ "$enable_bbr" = 1 ]; then
           mkdir -p /target/etc/sysctl.d
           printf '%s\n' \
